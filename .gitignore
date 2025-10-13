@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Project data (TDC downloads, processed artifacts) — anchored to repo root
+/data/
+/artifacts/
+
+# Trained checkpoints are large (>1 GB each) and reproducible from scripts/;
+# they live in artifacts/checkpoints/ which is excluded above.
+# Model weights that DO ship (DAPT ClinicalBERT) are tracked via git-lfs in models/.
+
+# Model weights cache lives on D:\Models, outside this repo (see src/fda_predictor/utils/paths.py)
+# If FDA_MODELS_ROOT is ever pointed inside the repo, keep it out of git:
+models/hub/
+hf_cache/
+
+# IDE / tooling
+.cursor/
+.vscode/
+.idea/
+
+# Environment / tooling
+.env
+uv.lock.bak
