@@ -1,0 +1,99 @@
+# FDA Approval Prediction Pipeline - master configuration
+# All checkpoint revisions are pinned to the SHAs verified during Task 0.
+
+seed: 42
+
+encoders:
+  chemberta:
+    name: DeepChem/ChemBERTa-77M-MTR
+    revision: 66b895cab8adebea0cb59a8effa66b2020f204ca
+    trust_remote_code: false
+    freeze: false            # stage 5: chemistry encoders unfrozen (ablation showed 0 contribution)
+    max_length: 128          # SMILES sequences
+  molformer:
+    name: ibm-research/MoLFormer-XL-both-10pct
+    revision: 361063d0ad524ef77cf39b08469f6be770dc550f
+    trust_remote_code: true   # required: Hub-hosted linear-attention code
+    freeze: false            # stage 5: chemistry encoders unfrozen
+    max_length: 128
+  clinicalbert:
+    name: emilyalsentzer/Bio_ClinicalBERT
+    dapt_path: "D:/Models/clinicalbert_dapt"  # Panacea TrialAlign MLM-adapted ClinicalBERT (probe-gated)
+    revision: d5892b39a4adaed74b92212a44081509db72f87b
+    trust_remote_code: false
+    freeze: false            # stage 2: unfreeze criteria encoder (strongest signal stream)
+    max_length: 512          # eligibility criteria text
+
+fusion:
+  hidden_dims: [768]
+  approval_hidden_dims: [256]  # Head B: sparse FDA-approval head
+  dropout: 0.2
+  phase_emb_dim: 32         # fourth stream: nn.Embedding over {I, II, III, IV, UNK}
+  # Input dim computed at build: sum(hidden_sizes) + phase_emb_dim + stock_emb_dim + tabular_emb_dim
+  # (384 + 768 + 768 + 32 + 64 + 64 = 2080 with current backbones).
+
+stock:
+  n_features: 7               # pre-event yfinance features (leakage-safe)
+  emb_dim: 64
+  freeze: false               # trains from scratch; never frozen in stage-1 default
+
+features:
+  tabular:
+    enabled: true
+    n_features: 100           # 7 legacy + 29 stage-7 + 64 stage-8 (kg pca)
+    emb_dim: 64
+    use_mol_null: true        # learned null embedding when SMILES missing
+
+labels:
+  target: dual               # dual = dense success head + masked sparse approval head
+  success_weight: 1.0        # dense signal weight (Head A)
+  approval_weight: 2.0       # upweight sparse approval signal (Head B, masked rows only)
+  exclude_previously_approved: true   # masks approval loss only; never drops rows
+
+threshold:
+  objective: precision         # precision | cost | f1
+  min_precision: 0.80
+  cost_fp: 3.0                 # used when objective=cost (penalize false approvals)
+  cost_fn: 1.0
+  abstain_band: 0.05
+
+cto:
+  enabled: true
+  fetch_ctgov: true           # batched ClinicalTrials.gov enrichment by nct_id
+  resolve_smiles: true        # PubChem name->SMILES (cached)
+  max_drugs_pubchem: 5
+
+training:
+  loss: weighted_bce         # weighted_bce | focal
+  focal_gamma: 2.0
+  lr: 1.0e-5                 # stage 2: halved for backbone fine-tuning stability
+  weight_decay: 0.01
+  batch_size: 8              # stage 5: all 3 transformers unfrozen -> shrink for 8 GB
+  grad_accum_steps: 4        # keeps effective batch 32
+  max_epochs: 30
+  early_stopping_patience: 5
+  metric_for_best: val_phase3_auprc
+  llrd: 0.9                  # ClinicalBERT layer-wise LR decay (<1 enables)
+  llrd_chemberta: 0.85       # stage 5: ChemBERTa per-layer decay (small model, cheapest LR at bottom)
+  llrd_molformer: 0.9        # stage 5: MoLFormer per-layer decay
+  freeze_clinicalbert_bottom_layers: 4
+  freeze_mol_bottom_layers: 0    # OOM fallback lever: >0 freezes bottom N of both mol encoders
+  warmup_ratio: 0.1
+  max_grad_norm: 1.0
+  run_name: stage5_chem_unfrozen
+
+compute:
+  device: cuda
+  amp_dtype: bfloat16        # falls back to float16 if unsupported
+  gradient_checkpointing: true    # required with ClinicalBERT unfrozen on 8 GB
+  num_workers: 2
+  pin_memory: true
+
+data:
+  dataset: TOP-PhaseIII       # benchmark authors' Phase III trial set
+  use_merged: true            # pool TOP + CTO human labels by chronological era
+  split_mode: chronological   # chronological (default, guard-enforced) | benchmark (not chronological!)
+  temporal_split: enforced    # chronological by numeric NCT; guarded by unit test
+  max_molecules_per_trial: 5  # deterministic cap: first-listed after canonicalization
+  val_fraction_of_trainval: 0.15  # train/val carve-out inside the chronological trainval block
+  min_criteria_chars: 20      # trials with shorter criteria text are dropped
